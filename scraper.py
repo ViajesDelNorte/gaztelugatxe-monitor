@@ -325,73 +325,95 @@ def get_slots_for_day(page: Page, day: int) -> list[tuple[dtime, int]]:
 
 # ---------- ОСНОВНАЯ ЛОГИКА ----------
 
-def check_tickets(target_date: date, windows: list[tuple[dtime, dtime]],
-                   people_needed: int, dry_run: bool, force: bool = False):
-    # Окно 08:00-20:00 — экономия на запусках по расписанию, а не правило:
-    # ночью билеты всё равно не вбрасывают. Ручной запуск его игнорирует
-    # (2026-08-16) — раз кнопку нажали руками, проверить надо сейчас, а не
-    # ждать до утра.
+def scrape_day(page: Page, target_date: date, people_needed: int) -> list[tuple[dtime, int]]:
+    """Один проход формы: тип брони + число персон, нужный месяц, нужный день."""
+    month_label = f"{MONTHS_ES[target_date.month - 1]} {target_date.year}"
+    page.goto(TARGET_URL, wait_until="networkidle", timeout=NAV_TIMEOUT_MS)
+    fill_step1(page, people_needed)
+
+    if not navigate_to_month(page, month_label):
+        print(f"[!] Не удалось долистать календарь до {month_label} "
+              f"(упёрлись в границу доступных для брони месяцев).")
+        save_debug(page, "calendar_month_not_reached")
+        return []
+
+    return get_slots_for_day(page, target_date.day)
+
+
+def check_tickets(watches: list[dict], dry_run: bool, force: bool = False):
+    """
+    Несколько независимых «наблюдений» за один запуск (2026-08-16).
+
+    У владельца уже есть 2 билета на 15:20 и 2 на 18:00 на 28 августа, и
+    ему нужно, чтобы все пятеро зашли одним заходом. Отсюда два разных
+    вопроса к сайту, а не один: «хватит ли 3 мест в моих слотах» и «есть
+    ли где-нибудь 5 мест сразу, чтобы старые билеты не понадобились».
+
+    Число персон выбирается на первом шаге формы и влияет на то, что сайт
+    вообще покажет, — поэтому под каждое сочетание (число людей + дата)
+    идёт свой проход формы, а не один общий.
+    """
     if not dry_run and not force and not within_active_hours():
         print("Вне рабочего окна 08:00-20:00 (Europe/Madrid), пропускаю проверку.")
         return
 
     state = load_state()
     found_any = False
-    target_month_label = f"{MONTHS_ES[target_date.month - 1]} {target_date.year}"
+    messages: list[str] = []
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
 
         try:
-            page.goto(TARGET_URL, wait_until="networkidle", timeout=NAV_TIMEOUT_MS)
-            fill_step1(page, people_needed)
+            for watch in watches:
+                name = watch["name"]
+                people = int(watch["people"])
+                windows = parse_time_windows(watch["windows"])
 
-            if not navigate_to_month(page, target_month_label):
-                print(f"[!] Не удалось долистать календарь до {target_month_label} "
-                      f"(упёрлись в границу доступных для брони месяцев).")
-                save_debug(page, "calendar_month_not_reached")
-                browser.close()
-                return
+                for iso in watch["dates"]:
+                    target_date = date.fromisoformat(iso)
+                    slots = scrape_day(page, target_date, people)
 
-            slots = get_slots_for_day(page, target_date.day)
+                    if dry_run:
+                        print(f"\n[{name}] {iso}, {people} чел.:")
+                        if not slots:
+                            print("  (свободных слотов нет / день полностью забронирован)")
+                        for slot_time, plazas in slots:
+                            mark = " <-- в целевом окне" if in_target_window(slot_time, windows) else ""
+                            print(f"  {slot_time.strftime('%H:%M')} — {plazas} plazas{mark}")
+                        continue
+
+                    for slot_time, plazas in slots:
+                        if not in_target_window(slot_time, windows):
+                            continue
+                        if plazas < people:
+                            continue
+                        # Ключ включает имя наблюдения: одно и то же время
+                        # может подходить сразу двум, и «уже сообщали» для
+                        # одного не должно глушить другое.
+                        key = f"{name}|{iso}|{slot_time.strftime('%H:%M')}"
+                        if state.get(key) == plazas:
+                            continue
+                        found_any = True
+                        state[key] = plazas
+                        messages.append(
+                            f"🎟 Gaztelugatxe — {name}\n"
+                            f"{target_date.strftime('%d.%m.%Y')}, {slot_time.strftime('%H:%M')} — "
+                            f"{plazas} свободных мест (нужно минимум {people}).\n"
+                            f"Бронировать: {TARGET_URL}"
+                        )
         except Exception as e:
             print(f"[!] Ошибка во время работы со страницей: {e}")
             save_debug(page, "scrape_error")
-            browser.close()
             raise
-
-        browser.close()
+        finally:
+            browser.close()
 
     if dry_run:
-        print(f"Слоты на {target_date.isoformat()} ({target_month_label}, {people_needed} чел.):")
-        if not slots:
-            print("  (свободных слотов нет / день полностью забронирован)")
-        for slot_time, plazas in slots:
-            marker = " <-- в целевом окне" if in_target_window(slot_time, windows) else ""
-            print(f"  {slot_time.strftime('%H:%M')} — {plazas} plazas{marker}")
         return
 
-    messages: list[str] = []
-    for slot_time, plazas in slots:
-        if not in_target_window(slot_time, windows):
-            continue
-        print(f"Слот {slot_time} — {plazas} plazas")
-        if plazas >= people_needed:
-            key = f"{target_date.isoformat()}-{slot_time.strftime('%H:%M')}"
-            already = state.get(key)
-            if already == plazas:
-                continue
-            found_any = True
-            state[key] = plazas
-            messages.append(
-                "🎟 Gaztelugatxe: появились места!\n"
-                f"{target_date.strftime('%d.%m.%Y')}, {slot_time.strftime('%H:%M')} — "
-                f"{plazas} свободных мест (нужно минимум {people_needed}).\n"
-                f"Бронировать: {TARGET_URL}"
-            )
-
-    # Все находки одним разом: одно письмо на запуск, а не по письму на слот.
+    # Все находки одним разом: одно уведомление на запуск, а не по штуке на слот.
     notify(messages)
 
     if found_any:
@@ -434,12 +456,43 @@ def parse_args():
     return parser.parse_args()
 
 
+WATCHES_FILE = "watches.json"
+
+
+def load_watches(args) -> list[dict]:
+    """
+    Что именно отслеживать, берётся из watches.json — там же и пояснение,
+    зачем каждое наблюдение нужно. Флаги командной строки и переменная
+    TARGET_DATE перекрывают файл целиком: так ручной запуск может
+    проверить одну произвольную дату, не трогая боевую конфигурацию.
+    """
+    override_date = os.environ.get("TARGET_DATE", "").strip()
+    if override_date or args.target_date != DEFAULT_TARGET_DATE:
+        return [{
+            "name": "ручная проверка",
+            "dates": [override_date or args.target_date],
+            "windows": args.time_windows,
+            "people": args.people,
+        }]
+
+    path = Path(WATCHES_FILE)
+    if path.exists():
+        watches = json.loads(path.read_text(encoding="utf-8"))
+        if watches:
+            return watches
+
+    return [{
+        "name": "по умолчанию",
+        "dates": [args.target_date],
+        "windows": args.time_windows,
+        "people": args.people,
+    }]
+
+
 if __name__ == "__main__":
     args = parse_args()
     try:
-        target_date = date.fromisoformat(args.target_date)
-        time_windows = parse_time_windows(args.time_windows)
-        check_tickets(target_date, time_windows, args.people, args.dry_run, args.force)
+        check_tickets(load_watches(args), args.dry_run, args.force)
     except Exception as e:
         print(f"[!] Ошибка выполнения: {e}")
         sys.exit(1)
