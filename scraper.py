@@ -341,14 +341,32 @@ def check_tickets(target_date: date, windows: list[tuple[dtime, dtime]],
         print("Подходящих слотов пока нет.")
 
 
+def env_or(name: str, default):
+    """
+    Пустая строка — это «не задано» (2026-08-16).
+
+    Workflow передаёт настройки как `TARGET_DATE: ${{ vars.TARGET_DATE }}`.
+    Если переменной в репозитории нет, Actions подставляет не «ничего», а
+    ПУСТУЮ СТРОКУ — переменная окружения существует и равна "". Поэтому
+    os.environ.get(name, default) возвращал "" вместо значения по
+    умолчанию, и скрипт падал на int("") ещё до первого обращения к сайту.
+
+    Это же ломало и старый монитор: 10 августа после теста переменную
+    TARGET_DATE удалили, рассчитывая, что скрипт вернётся к дате по
+    умолчанию, — а он с тех пор падал на каждом запуске.
+    """
+    value = os.environ.get(name, "")
+    return value.strip() or default
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Мониторинг билетов Gaztelugatxe")
-    parser.add_argument("--target-date", default=os.environ.get("TARGET_DATE", DEFAULT_TARGET_DATE),
+    parser.add_argument("--target-date", default=env_or("TARGET_DATE", DEFAULT_TARGET_DATE),
                          help="Дата в формате YYYY-MM-DD")
-    parser.add_argument("--time-windows", default=os.environ.get("TIME_WINDOWS", DEFAULT_TIME_WINDOWS),
+    parser.add_argument("--time-windows", default=env_or("TIME_WINDOWS", DEFAULT_TIME_WINDOWS),
                          help='Например "15:30-16:30,17:50-18:30"')
     parser.add_argument("--people", type=int,
-                         default=int(os.environ.get("PEOPLE_NEEDED", DEFAULT_PEOPLE_NEEDED)),
+                         default=int(env_or("PEOPLE_NEEDED", DEFAULT_PEOPLE_NEEDED)),
                          help="Сколько мест нужно найти минимум")
     parser.add_argument("--dry-run", action="store_true",
                          help="Только печатает найденные слоты, без отправки в Telegram")
