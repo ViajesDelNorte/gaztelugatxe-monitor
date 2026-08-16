@@ -15,7 +15,17 @@ on:
     # быть реже: планировщик Actions под нагрузкой задерживает запуски и
     # никаких гарантий по точности не даёт.
     - cron: "*/5 6-19 * * *"
-  workflow_dispatch: {}
+  # Ручной запуск. dry_run (2026-08-16) — проверить, что скрапер ещё
+  # понимает вёрстку сайта, не дожидаясь рабочего окна 08:00-20:00 и не
+  # отправляя ничего в Telegram: скрипт просто печатает найденные слоты
+  # в лог. Нужен, потому что иначе сломавшийся парсинг обнаружился бы
+  # только в момент, когда билеты уже разобрали.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Только показать слоты в логе, без отправки в Telegram"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -63,7 +73,7 @@ jobs:
           TARGET_DATE: ${{ vars.TARGET_DATE }}
           TIME_WINDOWS: ${{ vars.TIME_WINDOWS }}
           PEOPLE_NEEDED: ${{ vars.PEOPLE_NEEDED }}
-        run: python scraper.py
+        run: python scraper.py ${{ inputs.dry_run && '--dry-run' || '' }}
 
       - name: Upload debug artifacts on failure
         if: failure()
