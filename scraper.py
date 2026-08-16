@@ -202,11 +202,40 @@ def get_slots_for_day(page: Page, day: int) -> list[tuple[dtime, int]]:
     Если день полностью забронирован, сайт показывает попап "AFORO
     COMPLETADO" вместо списка слотов — в этом случае возвращается [].
     """
-    day_cell = page.locator('[class*="bookly-calendar-current-month-mark"]').filter(
-        has_text=re.compile(rf"^{day}$")
-    )
-    day_cell.first.wait_for(state="attached", timeout=NAV_TIMEOUT_MS)
-    day_cell.first.click()
+    # Вёрстка поменялась (2026-08-16): число дня теперь лежит не текстом
+    # прямо в ячейке, а завёрнуто в два вложенных <span>, и рядом появился
+    # пустой <span class="bookly-popup-catcher">. Из-за этого textContent
+    # ячейки стал не "28", а " 28" с пробелами, и фильтр по регулярке
+    # ^28$ перестал совпадать — скрипт 20 секунд ждал ячейку, которая была
+    # прямо перед ним, и падал по таймауту. Поэтому сравниваем сами, по
+    # обрезанному тексту, а не регуляркой по сырому содержимому.
+    cells = page.locator('[class*="bookly-calendar-current-month-mark"]')
+    cells.first.wait_for(state="attached", timeout=NAV_TIMEOUT_MS)
+
+    day_cell = None
+    for i in range(cells.count()):
+        cell = cells.nth(i)
+        if (cell.inner_text() or "").strip() == str(day):
+            day_cell = cell
+            break
+
+    if day_cell is None:
+        raise RuntimeError(
+            f"В календаре {current_month_label(page)} нет ячейки дня {day} — "
+            f"похоже, вёрстка страницы снова изменилась."
+        )
+
+    # День без свободных мест сайт отдаёт как обычную ячейку, но с
+    # disabled="true" и pointer-events-none: кликнуть по нему нельзя.
+    # Это НЕ поломка — это ответ «мест нет», и относиться к нему надо
+    # так же, как к попапу AFORO COMPLETADO ниже. Раньше скрипт этого не
+    # различал, честно кликал в никуда и падал с таймаутом.
+    css_class = day_cell.get_attribute("class") or ""
+    if day_cell.get_attribute("disabled") == "true" or "pointer-events-none" in css_class:
+        print(f"День {day} в календаре неактивен — свободных мест на эту дату нет.")
+        return []
+
+    day_cell.click()
 
     popup = page.locator("#custom-popup-box")
     hour_btn = page.locator("button.bookly-hour")
