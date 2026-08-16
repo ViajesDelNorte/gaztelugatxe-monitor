@@ -52,21 +52,43 @@ MONTHS_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun",
 
 NAV_TIMEOUT_MS = 20000
 
-# ---------- TELEGRAM ----------
+# ---------- УВЕДОМЛЕНИЯ ----------
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+# Файл-сигнал для workflow (2026-08-16). Телеграм требует токен бота, а
+# токен нужно завести руками — до тех пор монитор работал бы вхолостую:
+# места находил, а сказать о них было бы некому. Поэтому основной канал
+# теперь сам GitHub: если файл появился, workflow заводит issue, а GitHub
+# шлёт владельцу репозитория письмо и пуш в мобильное приложение. Ничего
+# настраивать не надо, встроенный токен Actions уже есть.
+NOTIFY_FILE = "notify_message.txt"
+
 
 def send_telegram(text: str):
+    """Второй канал. Молча пропускается, пока токен бота не заведён."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[!] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID не заданы, пропускаю отправку")
-        print(text)
+        print("[i] Телеграм не настроен (нет токена бота) — уведомление уйдёт письмом с GitHub.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    resp = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=15)
-    if resp.status_code != 200:
-        print(f"[!] Ошибка отправки в Telegram: {resp.status_code} {resp.text}")
+    try:
+        resp = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=15)
+        if resp.status_code != 200:
+            print(f"[!] Ошибка отправки в Telegram: {resp.status_code} {resp.text}")
+    except Exception as e:
+        # Телеграм лежит — это не повод терять находку: письмо всё равно уйдёт.
+        print(f"[!] Не удалось достучаться до Telegram: {e}")
+
+
+def notify(messages: list[str]):
+    """Оба канала сразу: письмо через GitHub-issue и, если настроен, Telegram."""
+    if not messages:
+        return
+    text = "\n\n".join(messages)
+    print(text)
+    Path(NOTIFY_FILE).write_text(text, encoding="utf-8")
+    send_telegram(text)
 
 
 # ---------- STATE (чтобы не слать одно и то же повторно) ----------
@@ -346,6 +368,7 @@ def check_tickets(target_date: date, windows: list[tuple[dtime, dtime]],
             print(f"  {slot_time.strftime('%H:%M')} — {plazas} plazas{marker}")
         return
 
+    messages: list[str] = []
     for slot_time, plazas in slots:
         if not in_target_window(slot_time, windows):
             continue
@@ -357,12 +380,15 @@ def check_tickets(target_date: date, windows: list[tuple[dtime, dtime]],
                 continue
             found_any = True
             state[key] = plazas
-            send_telegram(
+            messages.append(
                 "🎟 Gaztelugatxe: появились места!\n"
                 f"{target_date.strftime('%d.%m.%Y')}, {slot_time.strftime('%H:%M')} — "
                 f"{plazas} свободных мест (нужно минимум {people_needed}).\n"
                 f"Бронировать: {TARGET_URL}"
             )
+
+    # Все находки одним разом: одно письмо на запуск, а не по письму на слот.
+    notify(messages)
 
     if found_any:
         save_state(state)

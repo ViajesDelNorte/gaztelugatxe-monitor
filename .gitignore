@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+notify_message.txt

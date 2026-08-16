@@ -23,12 +23,19 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Только показать слоты в логе, без отправки в Telegram"
+        description: "Только показать слоты в логе, без уведомлений"
         type: boolean
         default: false
+      target_date:
+        description: "Проверить другую дату, YYYY-MM-DD (пусто = 28 августа)"
+        type: string
+        default: ""
 
 permissions:
   contents: write
+  # issues: write (2026-08-16) — уведомление письмом идёт через issue,
+  # см. шаг «Notify by e-mail» ниже.
+  issues: write
 
 concurrency:
   group: check-tickets
@@ -70,10 +77,26 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TARGET_DATE: ${{ vars.TARGET_DATE }}
+          # inputs.target_date перекрывает переменную репозитория — чтобы
+          # можно было проверить работу на дате, где места точно есть.
+          TARGET_DATE: ${{ inputs.target_date || vars.TARGET_DATE }}
           TIME_WINDOWS: ${{ vars.TIME_WINDOWS }}
           PEOPLE_NEEDED: ${{ vars.PEOPLE_NEEDED }}
         run: python scraper.py ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      # Основной канал уведомлений: GitHub сам шлёт письмо владельцу
+      # репозитория на каждый новый issue, плюс пуш в мобильное
+      # приложение. Встроенного токена Actions для этого достаточно —
+      # ничего заводить руками не нужно, в отличие от бота Telegram.
+      - name: Notify by e-mail
+        if: hashFiles('notify_message.txt') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --title "🎟 Gaztelugatxe: появились места" \
+            --body-file notify_message.txt \
+            --assignee "${{ github.repository_owner }}"
 
       - name: Upload debug artifacts on failure
         if: failure()
