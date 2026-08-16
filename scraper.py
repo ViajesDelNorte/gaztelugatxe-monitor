@@ -326,8 +326,12 @@ def get_slots_for_day(page: Page, day: int) -> list[tuple[dtime, int]]:
 # ---------- ОСНОВНАЯ ЛОГИКА ----------
 
 def check_tickets(target_date: date, windows: list[tuple[dtime, dtime]],
-                   people_needed: int, dry_run: bool):
-    if not dry_run and not within_active_hours():
+                   people_needed: int, dry_run: bool, force: bool = False):
+    # Окно 08:00-20:00 — экономия на запусках по расписанию, а не правило:
+    # ночью билеты всё равно не вбрасывают. Ручной запуск его игнорирует
+    # (2026-08-16) — раз кнопку нажали руками, проверить надо сейчас, а не
+    # ждать до утра.
+    if not dry_run and not force and not within_active_hours():
         print("Вне рабочего окна 08:00-20:00 (Europe/Madrid), пропускаю проверку.")
         return
 
@@ -424,7 +428,9 @@ def parse_args():
                          default=int(env_or("PEOPLE_NEEDED", DEFAULT_PEOPLE_NEEDED)),
                          help="Сколько мест нужно найти минимум")
     parser.add_argument("--dry-run", action="store_true",
-                         help="Только печатает найденные слоты, без отправки в Telegram")
+                         help="Только печатает найденные слоты, без уведомлений")
+    parser.add_argument("--force", action="store_true",
+                         help="Проверить даже вне рабочего окна 08:00-20:00")
     return parser.parse_args()
 
 
@@ -433,7 +439,7 @@ if __name__ == "__main__":
     try:
         target_date = date.fromisoformat(args.target_date)
         time_windows = parse_time_windows(args.time_windows)
-        check_tickets(target_date, time_windows, args.people, args.dry_run)
+        check_tickets(target_date, time_windows, args.people, args.dry_run, args.force)
     except Exception as e:
         print(f"[!] Ошибка выполнения: {e}")
         sys.exit(1)

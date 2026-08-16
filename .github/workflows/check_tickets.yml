@@ -82,7 +82,10 @@ jobs:
           TARGET_DATE: ${{ inputs.target_date || vars.TARGET_DATE }}
           TIME_WINDOWS: ${{ vars.TIME_WINDOWS }}
           PEOPLE_NEEDED: ${{ vars.PEOPLE_NEEDED }}
-        run: python scraper.py ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: >-
+          python scraper.py
+          ${{ inputs.dry_run && '--dry-run' || '' }}
+          ${{ github.event_name == 'workflow_dispatch' && '--force' || '' }}
 
       # Основной канал уведомлений: GitHub сам шлёт письмо владельцу
       # репозитория на каждый новый issue, плюс пуш в мобильное
